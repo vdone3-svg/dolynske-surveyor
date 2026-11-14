@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate">
+<title>Перевірка меж — Долинське</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d1117;color:#fff;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+/* ЕКРАН ВИБОРУ ПОЛЯ */
+#screenSelect{position:fixed;inset:0;background:#0d1117;z-index:1000;display:flex;flex-direction:column}
+#screenSelect h1{padding:20px 16px 8px;font-size:18px;color:#e8d5a3;border-bottom:1px solid #21262d}
+#screenSelect p{padding:10px 16px;font-size:13px;color:#8b949e}
+#fieldList{flex:1;overflow-y:auto;padding:8px}
+.field-item{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px 16px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;gap:12px;transition:background .15s}
+.field-item:active{background:#1f2937}
+.field-dot{width:14px;height:14px;border-radius:50%;background:#3b82f6;flex-shrink:0}
+.field-name{font-size:15px;font-weight:600}
+.field-area{font-size:12px;color:#8b949e;margin-top:2px}
+.field-pts{font-size:11px;color:#4b5563;margin-top:2px}
+
+/* КАРТА */
+#map{flex:1}
+
+/* HEADER */
+#header{background:#161b22;padding:8px 12px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #30363d;flex-shrink:0}
+#fieldLabel{font-size:14px;font-weight:700;color:#e8d5a3;flex:1}
+#btnBack{background:#374151;color:#ccc;border:none;border-radius:7px;padding:6px 10px;font-size:12px;cursor:pointer}
+
+/* PROGRESS */
+#progress{background:#161b22;padding:6px 12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #21262d;flex-shrink:0}
+#progressBar{flex:1;height:6px;background:#21262d;border-radius:3px;overflow:hidden}
+#progressFill{height:100%;background:#16a34a;width:0%;transition:width .4s;border-radius:3px}
+#progressText{font-size:12px;color:#8b949e;white-space:nowrap}
+
+/* TOOLBAR */
+#toolbar{background:#161b22;padding:8px 10px;display:flex;gap:8px;flex-shrink:0;border-top:1px solid #30363d}
+.btn{padding:9px 14px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px}
+.btn-gps{background:#2563eb;color:#fff;flex:1}
+.btn-gps.on{background:#16a34a}
+.btn-export{background:#d97706;color:#fff;flex:1}
+
+/* STATUS */
+#status{background:#0d1117;padding:5px 12px;font-size:11px;color:#8b949e;flex-shrink:0;min-height:22px}
+
+/* ALERT OVERLAY */
+#alert{position:fixed;inset:0;background:rgba(0,0,0,0);z-index:2000;display:flex;align-items:center;justify-content:center;pointer-events:none;transition:background .2s}
+#alert.show{background:rgba(22,163,74,.25);pointer-events:none}
+#alertBox{background:#14532d;border:2px solid #16a34a;border-radius:16px;padding:24px 32px;text-align:center;transform:scale(0);transition:transform .2s;max-width:280px}
+#alert.show #alertBox{transform:scale(1)}
+#alertBox .icon{font-size:48px;margin-bottom:8px}
+#alertBox .msg{font-size:16px;font-weight:700;color:#bbf7d0}
+#alertBox .sub{font-size:13px;color:#86efac;margin-top:4px}
+
+/* ПАНЕЛЬ ФАКТИЧНОЇ ПЛОЩІ */
+#areaPanel{background:#14532d;border-top:1px solid #16a34a;padding:6px 12px;font-size:12px;color:#bbf7d0;display:none;flex-shrink:0}
+#areaPanel span{font-weight:700;color:#4ade80}
+</style>
+</head>
+<body>
+
+<!-- ВИБІР ПОЛЯ -->
+<div id="screenSelect">
+  <h1>🌾 Перевірка меж полів</h1>
+  <p>Виберіть поле для обходу:</p>
+  <div id="fieldList"></div>
+</div>
+
+<!-- РОБОЧА КАРТА -->
+<div id="header" style="display:none">
+  <button id="btnBack" onclick="goBack()">← Поля</button>
+  <span id="fieldLabel"></span>
+</div>
+<div id="progress" style="display:none">
+  <div id="progressBar"><div id="progressFill"></div></div>
+  <span id="progressText">0 / 0</span>
+</div>
+<div id="map" style="display:none"></div>
+<div id="toolbar" style="display:none">
+  <button class="btn btn-gps" id="btnGps" onclick="toggleGps()">📍 GPS</button>
+  <button class="btn btn-marker" id="btnMarker" onclick="startMarker()" style="background:#dc2626;color:#fff;flex:1">📌 Межа</button>
+  <button class="btn btn-export" onclick="exportResult()">📤 Звіт</button>
+</div>
+<div id="areaPanel"></div>
+<div id="status" style="display:none"></div>
+
+<!-- ALERT -->
+<div id="alert"><div id="alertBox"><div class="icon">✅</div><div class="msg" id="alertMsg"></div><div class="sub" id="alertSub"></div></div></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ===== ДАНІ ПОЛІВ =====
+// Кожне поле: назва, площа, масив кілець (кожне кільце = масив [lng,lat])
+const FIELDS_DATA = [
+  {name:"106", area:31.86, rings:[[[33.60617,48.70424],[33.61041,48.70390],[33.60971,48.69322],[33.60885,48.69319],[33.60799,48.69302],[33.60756,48.69280],[33.60780,48.69631],[33.60570,48.69627],[33.60578,48.69705],[33.60633,48.69781],[33.60637,48.69875],[33.60582,48.69889]]]},
+  {name:"102", area:99.69, rings:[[[33.576588,48.681615],[33.57661,48.683166],[33.5768199,48.68445],[33.576758,48.68496],[33.576911,48.686009],[33.576731,48.686697],[33.576224,48.687845],[33.575546,48.688992],[33.574468,48.690003],[33.573075,48.69089],[33.5710589,48.6919542],[33.570915,48.691987],[33.571166,48.692355],[33.571395,48.692497],[33.572653,48.694243],[33.594163,48.689348],[33.589088,48.687154],[33.580185,48.683163],[33.579494,48.682709],[33.577755,48.681994],[33.576646,48.68144]]]},
+  {name:"115", area:40.24, rings:[[[33.605150,48.694524],[33.592763,48.694886],[33.591919,48.693091],[33.598689,48.692896],[33.598487,48.690606],[33.590854,48.690825],[33.590788,48.690683],[33.590794,48.690562],[33.590899,48.690504],[33.594340,48.689729],[33.594562,48.689825],[33.594742,48.689784],[33.594763,48.689656],[33.595275,48.689491],[33.595573,48.689701],[33.595758,48.689699],[33.595920,48.689624],[33.601229,48.689205],[33.601700,48.689283],[33.604786,48.691113],[33.604983,48.692744]]]},
+  {name:"62", area:22.63, rings:[[[33.60613,48.72429],[33.61413,48.72428],[33.61527,48.72215],[33.60719,48.72216]],[[33.60721,48.72212],[33.61002,48.72211],[33.61213,48.71818],[33.60984,48.71799],[33.60893,48.71946],[33.60790,48.72093],[33.60745,48.72164]]]},
+  {name:"Гаценково", area:118.46, rings:[[[33.56335,48.73502],[33.56517,48.73287],[33.56700,48.73049],[33.56790,48.72921],[33.57296,48.73100],[33.57366,48.72956],[33.57708,48.73073],[33.57673,48.73119],[33.57688,48.73127],[33.57726,48.73079],[33.57984,48.73179],[33.57990,48.73186],[33.58079,48.73201],[33.58087,48.73198],[33.58102,48.73177],[33.58099,48.73168],[33.58118,48.73163],[33.58173,48.73169],[33.58207,48.73166],[33.58255,48.73151],[33.58344,48.73113],[33.58461,48.73067],[33.58522,48.73054],[33.58814,48.73022],[33.58738,48.73183],[33.58562,48.73202],[33.58329,48.73703],[33.57963,48.73626],[33.58139,48.73247],[33.57936,48.73268],[33.57935,48.73265],[33.57944,48.73253],[33.57946,48.73232],[33.57920,48.73222],[33.57867,48.73212],[33.57846,48.73210],[33.57828,48.73222],[33.57796,48.73267],[33.57792,48.73285],[33.57808,48.73293],[33.57849,48.73297],[33.57851,48.73300],[33.57568,48.73873],[33.57514,48.73860],[33.57509,48.73869],[33.57497,48.73867],[33.57273,48.74266],[33.56717,48.73998],[33.56848,48.73757]]]},
+  {name:"Пленного", area:32.11, rings:[[[33.623785,48.719325],[33.623287,48.719242],[33.621337,48.719038],[33.619702,48.72214],[33.622339,48.721977]],[[33.622312,48.722024],[33.615476,48.722445],[33.614712,48.72390],[33.613872,48.725494],[33.612898,48.727343],[33.612956,48.727453],[33.613104,48.727559],[33.614815,48.727639],[33.617600,48.726964],[33.618961,48.726653],[33.619437,48.726472],[33.619999,48.725115],[33.620623,48.725118],[33.621517,48.723479]]]},
+  {name:"75", area:74.48, rings:[[[33.618256,48.709139],[33.617088,48.70959],[33.616895,48.70969],[33.616729,48.70993],[33.616356,48.711605],[33.615718,48.713771],[33.618049,48.714112],[33.624378,48.715031],[33.624544,48.714106],[33.624625,48.713694],[33.62493,48.712195],[33.625186,48.710941],[33.625267,48.71055],[33.625546,48.709228],[33.623188,48.709266],[33.621894,48.709361],[33.620574,48.709083],[33.620053,48.70908],[33.61985,48.709012],[33.619532,48.709038]],[[33.613064,48.713226],[33.611752,48.715203],[33.611299,48.715887],[33.610809,48.716563],[33.61743,48.717242],[33.617681,48.71581],[33.617973,48.714145],[33.615709,48.713816]],[[33.617412,48.718421],[33.619244,48.718587],[33.621229,48.718765],[33.623143,48.718937],[33.623363,48.71894],[33.62357,48.71891],[33.623718,48.718827],[33.623803,48.718323],[33.624374,48.715075],[33.621939,48.714723],[33.619972,48.714435],[33.618036,48.714157],[33.617295,48.718412]]]},
+  {name:"110", area:109.31, rings:[[[33.58029,48.71880],[33.57213,48.72873],[33.58020,48.73159],[33.58085,48.73141],[33.58105,48.73105],[33.58122,48.73086],[33.58154,48.73081],[33.58207,48.73084],[33.58239,48.73096],[33.58262,48.73116],[33.58357,48.73069],[33.58454,48.73038],[33.58511,48.73027],[33.58599,48.73016],[33.58730,48.73007],[33.58930,48.72628],[33.59061,48.72396],[33.59136,48.72268],[33.59188,48.72179],[33.59118,48.72161],[33.58953,48.72119],[33.58935,48.72112],[33.58693,48.72046],[33.58501,48.72003],[33.58283,48.72418],[33.57942,48.72340],[33.58146,48.71912]]]},
+  {name:"Ферма", area:37.20, rings:[[[33.60617,48.70424],[33.61041,48.70390],[33.60971,48.69322],[33.60885,48.69319],[33.60799,48.69302],[33.60756,48.69280],[33.60780,48.69631],[33.60570,48.69627],[33.60578,48.69705],[33.60633,48.69781],[33.60637,48.69875],[33.60582,48.69889]],[[33.59211,48.72186],[33.60107,48.72240],[33.60164,48.72134],[33.60410,48.71687],[33.60388,48.71677],[33.60388,48.71661],[33.60420,48.71570],[33.60419,48.71555],[33.60400,48.71546],[33.60308,48.71538],[33.59986,48.71519],[33.59665,48.72101],[33.59271,48.72078],[33.59236,48.72134]]]},
+  {name:"Кабаняче", area:31.15, rings:[[[33.67095,48.71766],[33.67448,48.71791],[33.67553,48.71264],[33.67408,48.71201],[33.67217,48.71136],[33.67197,48.71134],[33.67168,48.71152],[33.67143,48.71175],[33.67113,48.71187],[33.67085,48.71216],[33.67044,48.71273],[33.67026,48.71311],[33.67021,48.71330],[33.67047,48.71474],[33.67039,48.71565],[33.67038,48.71612]],[[33.67554,48.71254],[33.67634,48.70836],[33.67378,48.70820],[33.67333,48.70824],[33.67312,48.70828],[33.67257,48.71080],[33.67383,48.71150],[33.67492,48.71213]]]},
+  {name:"Безсмертне", area:27.42, rings:[[[33.69998,48.69650],[33.69938,48.69899],[33.69939,48.69924],[33.70002,48.69937],[33.70235,48.69956],[33.70283,48.69948],[33.70370,48.69480],[33.70145,48.69302],[33.69936,48.69117],[33.69842,48.69043],[33.69731,48.69624]]]},
+  {name:"Молоківка", area:80.64, rings:[[[33.63401,48.70064],[33.63453,48.69814],[33.63920,48.69804],[33.64143,48.69796],[33.64304,48.69800],[33.64571,48.69806],[33.64796,48.69807],[33.64992,48.69791],[33.65141,48.69768],[33.65266,48.69742],[33.65497,48.69708],[33.65717,48.69678],[33.66113,48.69637],[33.66661,48.69578],[33.66466,48.69681],[33.66432,48.69696],[33.66270,48.69853],[33.66189,48.69903],[33.65947,48.70027],[33.65902,48.70078],[33.65808,48.70163],[33.65604,48.70216],[33.65351,48.70202],[33.65360,48.70088],[33.65353,48.70050],[33.65295,48.69988],[33.65229,48.69977],[33.65211,48.69975],[33.65144,48.69938],[33.65109,48.69929],[33.65075,48.69931],[33.65054,48.69940],[33.65025,48.69991],[33.64976,48.70015],[33.64916,48.70035],[33.64880,48.70059],[33.64858,48.70149],[33.64844,48.70172],[33.64816,48.70188],[33.64775,48.70197],[33.64158,48.70187],[33.64183,48.70046]]]},
+  {name:"Тік", area:30.51, rings:[[[33.62520,48.70038],[33.61835,48.70082],[33.61811,48.69543],[33.62496,48.69525],[33.62508,48.69736],[33.62591,48.69735],[33.62583,48.69830],[33.62549,48.69836]]]}
+];
+
+// ===== СТАН =====
+let map, currentField = null, gpsActive = false, gpsWatchId = null;
+let gpsMarker = null, gpsCircle = null;
+let checkpoints = []; // {lat, lng, visited, marker, ringIdx, ptIdx}
+let visitLog = []; // {name, lat, lng, time, ringIdx, ptIdx}
+const RADIUS_M = 5;
+
+// ===== СПИСОК ПОЛІВ =====
+function buildList(){
+  const list = document.getElementById('fieldList');
+  FIELDS_DATA.forEach((f,i)=>{
+    const totalPts = f.rings.reduce((s,r)=>s+r.length,0);
+    const div = document.createElement('div');
+    div.className = 'field-item';
+    div.innerHTML = `<div class="field-dot"></div><div><div class="field-name">${f.name}</div><div class="field-area">${f.area} га</div><div class="field-pts">${totalPts} кутових точок</div></div>`;
+    div.onclick = ()=>selectField(i);
+    list.appendChild(div);
+  });
+}
+
+// ===== ВИБІР ПОЛЯ =====
+function selectField(idx){
+  currentField = FIELDS_DATA[idx];
+  document.getElementById('screenSelect').style.display='none';
+  ['header','progress','map','toolbar','status'].forEach(id=>{
+    document.getElementById(id).style.display = id==='map' ? 'block' : (id==='toolbar'?'flex':'block');
+    if(id==='map') document.getElementById(id).style.flex='1';
+  });
+  document.getElementById('areaPanel').style.display='none';
+
+  document.getElementById('fieldLabel').textContent = `${currentField.name} · ${currentField.area} га`;
+  setStatus('GPS вимкнено — натисніть кнопку для початку');
+
+  // Ініціалізація карти (один раз)
+  if(!map){
+    map = L.map('map',{zoomControl:true,attributionControl:false});
+    L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',{
+      subdomains:['mt0','mt1','mt2','mt3'],maxZoom:21
+    }).addTo(map);
+  } else {
+    // Очистити попереднє
+    map.eachLayer(l=>{ if(!(l instanceof L.TileLayer)) map.removeLayer(l); });
+  }
+
+  checkpoints = [];
+  visitLog = [];
+  manualMarkers = [];
+  pendingLatLng = null;
+  markerMode = false;
+
+  // Малюємо контур
+  const latlngs = currentField.rings.map(r=>r.map(c=>[c[1],c[0]]));
+  const poly = L.polygon(latlngs,{color:'#3b82f6',weight:2.5,fillColor:'#3b82f6',fillOpacity:0.1}).addTo(map);
+
+  // Розставляємо точки на вершинах
+  currentField.rings.forEach((ring, ri)=>{
+    ring.forEach((coord, pi)=>{
+      const lat=coord[1], lng=coord[0];
+      const m = L.circleMarker([lat,lng],{
+        radius:8, color:'#fff', weight:2,
+        fillColor:'#6b7280', fillOpacity:1
+      }).addTo(map);
+      m.bindPopup(`Кільце ${ri+1}, точка ${pi+1}<br>${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+      checkpoints.push({lat,lng,visited:false,marker:m,ringIdx:ri,ptIdx:pi});
+    });
+  });
+
+  map.fitBounds(poly.getBounds(),{padding:[30,30]});
+  updateProgress();
+  setTimeout(()=>map.invalidateSize(),300);
+  initMapClick();
+}
+
+// ===== ПРОГРЕС =====
+function updateProgress(){
+  const done = checkpoints.filter(c=>c.visited).length;
+  const total = checkpoints.length;
+  const pct = total ? (done/total*100) : 0;
+  document.getElementById('progressFill').style.width = pct+'%';
+  document.getElementById('progressText').textContent = `${done} / ${total} точок`;
+}
+
+// ===== GPS =====
+function toggleGps(){
+  gpsActive ? stopGps() : startGps();
+}
+
+function startGps(){
+  if(!navigator.geolocation){ setStatus('GPS недоступний'); return; }
+  setStatus('Визначаю місцезнаходження...');
+  gpsWatchId = navigator.geolocation.watchPosition(onGps, onGpsErr,
+    {enableHighAccuracy:true, maximumAge:3000, timeout:15000});
+  gpsActive = true;
+  document.getElementById('btnGps').className='btn btn-gps on';
+  document.getElementById('btnGps').textContent='🔴 GPS вкл';
+}
+
+function stopGps(){
+  if(gpsWatchId) navigator.geolocation.clearWatch(gpsWatchId);
+  if(gpsMarker) map.removeLayer(gpsMarker);
+  if(gpsCircle) map.removeLayer(gpsCircle);
+  gpsMarker=gpsCircle=null; gpsActive=false;
+  document.getElementById('btnGps').className='btn btn-gps';
+  document.getElementById('btnGps').textContent='📍 Увімкнути GPS';
+  setStatus('GPS вимкнено');
+}
+
+function onGps(pos){
+  const {latitude:lat,longitude:lng,accuracy} = pos.coords;
+  if(gpsMarker) map.removeLayer(gpsMarker);
+  if(gpsCircle) map.removeLayer(gpsCircle);
+  gpsCircle=L.circle([lat,lng],{radius:accuracy,color:'#3b82f6',fillColor:'#3b82f6',fillOpacity:0.08,weight:1}).addTo(map);
+  gpsMarker=L.circleMarker([lat,lng],{radius:7,color:'#fff',fillColor:'#2563eb',fillOpacity:1,weight:2}).addTo(map);
+  setStatus(`📍 ±${Math.round(accuracy)}м`);
+  checkProximity(lat,lng);
+}
+
+function onGpsErr(e){ setStatus('Помилка GPS: '+e.message); }
+
+// ===== РУЧНІ МАРКЕРИ (реальна межа) =====
+let manualMarkers = [];
+let pendingLatLng = null;
+let markerMode = false;
+let mapClickInited = false;
+
+function startMarker(){
+  markerMode=true;
+  setStatus('👆 Тисніть на карті де РЕАЛЬНО проходить межа — коментар не потрібен');
+  map.getContainer().style.cursor='crosshair';
+  document.getElementById('btnMarker').style.background='#7f1d1d';
+  document.getElementById('btnMarker').textContent='✖ Відміна';
+  document.getElementById('btnMarker').onclick=cancelMarkerMode;
+}
+
+function cancelMarkerMode(){
+  markerMode=false;
+  map.getContainer().style.cursor='';
+  document.getElementById('btnMarker').style.background='#dc2626';
+  document.getElementById('btnMarker').textContent='📌 Межа';
+  document.getElementById('btnMarker').onclick=startMarker;
+  setStatus('');
+}
+
+// Клік на карті — без діалогу, одразу ставить маркер
+function initMapClick(){
+  if(mapClickInited) return;
+  mapClickInited=true;
+  map.on('click',function(e){
+    if(!markerMode) return;
+    placeManualMarker(e.latlng);
+    cancelMarkerMode();
+  });
+}
+
+function placeManualMarker(latlng){
+  const num=manualMarkers.length+1;
+
+  // Знаходимо найближчу планову точку і рахуємо зміщення
+  let nearest=null, nearDist=Infinity;
+  checkpoints.forEach(cp=>{
+    const d=haversine(latlng.lat,latlng.lng,cp.lat,cp.lng);
+    if(d<nearDist){nearDist=d;nearest=cp;}
+  });
+
+  // Напрямок зміщення (кардинальний)
+  let direction='';
+  if(nearest){
+    const dLat=latlng.lat-nearest.lat, dLng=latlng.lng-nearest.lng;
+    const angle=Math.atan2(dLng,dLat)*180/Math.PI;
+    const dirs=['Пн','Пн-Сх','Сх','Пд-Сх','Пд','Пд-Зх','Зх','Пн-Зх'];
+    direction=dirs[Math.round((angle+360)%360/45)%8];
+  }
+
+  const shiftM=Math.round(nearDist);
+  const shiftTxt=nearest ? `${shiftM}м на ${direction} від точки К${nearest.ringIdx+1}.${nearest.ptIdx+1}` : '';
+
+  const icon=L.divIcon({
+    className:'',
+    html:`<div style="background:#dc2626;color:#fff;border-radius:50% 50% 50% 0;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.5)"><span style="transform:rotate(45deg)">${num}</span></div>`,
+    iconAnchor:[14,28]
+  });
+
+  const m=L.marker(latlng,{icon}).addTo(map);
+  m.bindPopup(
+    `<b>Реальна межа #${num}</b><br>` +
+    (shiftTxt?`<span style="color:#fca5a5">↔ Зміщення: ${shiftTxt}</span><br>`:'') +
+    `<small style="color:#9ca3af">${latlng.lat.toFixed(6)}, ${latlng.lng.toFixed(6)}</small>`
+  ).openPopup();
+
+  manualMarkers.push({num, lat:latlng.lat, lng:latlng.lng, shiftM, shiftTxt, leafletMarker:m});
+  setStatus(`📌 Точка #${num}: ${shiftTxt||'зміщення не розраховано'}`);
+
+  updateActualArea();
+}
+
+// Малюємо лінію фактичного контуру і рахуємо площу
+function updateActualArea(){
+  // Видалити попередню фактичну лінію
+  if(window._actualLayer){ map.removeLayer(window._actualLayer); window._actualLayer=null; }
+
+  if(manualMarkers.length<3){
+    document.getElementById('areaPanel').style.display='none';
+    return;
+  }
+
+  const pts=manualMarkers.map(m=>[m.lat,m.lng]);
+  window._actualLayer=L.polygon(pts,{
+    color:'#dc2626', weight:2, dashArray:'6 4',
+    fillColor:'#dc2626', fillOpacity:0.08
+  }).addTo(map);
+
+  const areaM2=sphericalArea(manualMarkers.map(m=>({lat:m.lat,lng:m.lng})));
+  const areaHa=(areaM2/10000).toFixed(2);
+  const planned=currentField.area;
+  const diff=(areaHa-planned).toFixed(2);
+  const sign=diff>0?'+':'';
+
+  const panel=document.getElementById('areaPanel');
+  panel.style.display='block';
+  panel.innerHTML=`📐 Фактична площа (по точках): <span>${areaHa} га</span> &nbsp;|&nbsp; Планова: <span>${planned} га</span> &nbsp;|&nbsp; Різниця: <span>${sign}${diff} га</span>`;
+}
+
+// Площа сферичного полігону (формула Гауса на сфері)
+function sphericalArea(pts){
+  const R=6371000;
+  let area=0;
+  const n=pts.length;
+  for(let i=0;i<n;i++){
+    const j=(i+1)%n;
+    const lat1=pts[i].lat*Math.PI/180, lat2=pts[j].lat*Math.PI/180;
+    const dLng=(pts[j].lng-pts[i].lng)*Math.PI/180;
+    area+=dLng*(2+Math.sin(lat1)+Math.sin(lat2));
+  }
+  return Math.abs(area*R*R/2);
+}
+
+// ===== ПЕРЕВІРКА БЛИЗЬКОСТІ =====
+function checkProximity(lat,lng){
+  checkpoints.forEach(cp=>{
+    if(cp.visited) return;
+    const dist = haversine(lat,lng,cp.lat,cp.lng);
+    if(dist <= RADIUS_M){
+      cp.visited = true;
+      // Маркер стає зеленим
+      cp.marker.setStyle({fillColor:'#16a34a',color:'#fff'});
+      cp.marker.setRadius(10);
+      // Запис
+      visitLog.push({
+        name:`Кільце ${cp.ringIdx+1}, точка ${cp.ptIdx+1}`,
+        lat:cp.lat, lng:cp.lng,
+        time:new Date().toLocaleTimeString('uk-UA'),
+        dist:Math.round(dist)
+      });
+      updateProgress();
+      triggerAlert(cp);
+
+      const done = checkpoints.filter(c=>c.visited).length;
+      if(done === checkpoints.length) fieldComplete();
+    }
+  });
+}
+
+// ===== СИГНАЛ =====
+function triggerAlert(cp){
+  // Вібрація
+  if(navigator.vibrate) navigator.vibrate([200,100,200]);
+
+  // Звук
+  try{
+    const ctx = new (window.AudioContext||window.webkitAudioContext)();
+    [523,659,784].forEach((freq,i)=>{
+      const o=ctx.createOscillator(), g=ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.frequency.value=freq; o.type='sine';
+      g.gain.setValueAtTime(0.3,ctx.currentTime+i*0.15);
+      g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+i*0.15+0.2);
+      o.start(ctx.currentTime+i*0.15);
+      o.stop(ctx.currentTime+i*0.15+0.25);
+    });
+  }catch(e){}
+
+  // Анімація
+  const done = checkpoints.filter(c=>c.visited).length;
+  const total = checkpoints.length;
+  document.getElementById('alertMsg').textContent = `✅ Точка ${done} з ${total}`;
+  document.getElementById('alertSub').textContent = `Кільце ${cp.ringIdx+1}, точка ${cp.ptIdx+1}`;
+  const al = document.getElementById('alert');
+  al.classList.add('show');
+  setTimeout(()=>al.classList.remove('show'), 2000);
+}
+
+function fieldComplete(){
+  if(navigator.vibrate) navigator.vibrate([300,100,300,100,500]);
+  document.getElementById('alertMsg').textContent='🏆 Поле пройдено!';
+  document.getElementById('alertSub').textContent=`${currentField.name} — всі ${checkpoints.length} точок перевірено`;
+  const al = document.getElementById('alert');
+  al.classList.add('show');
+  setTimeout(()=>al.classList.remove('show'), 3500);
+}
+
+// ===== ПОВЕРНЕННЯ =====
+function goBack(){
+  stopGps();
+  if(window._actualLayer){ map.removeLayer(window._actualLayer); window._actualLayer=null; }
+  ['header','progress','map','toolbar','status','areaPanel'].forEach(id=>{
+    document.getElementById(id).style.display='none';
+  });
+  document.getElementById('screenSelect').style.display='flex';
+  currentField=null; checkpoints=[]; visitLog=[];
+}
+
+// ===== ЕКСПОРТ =====
+function exportResult(){
+  const date=new Date().toLocaleString('uk-UA',{timeZone:'Europe/Kiev'});
+  const done=checkpoints.filter(c=>c.visited).length;
+  const total=checkpoints.length;
+  let txt=`ЗВІТ ОБХОДУ ПОЛЯ — ТОВ Долинське\n`;
+  txt+=`Поле: ${currentField.name} (${currentField.area} га)\n`;
+  txt+=`Дата: ${date}\n`;
+  txt+=`Результат: ${done} з ${total} точок перевірено\n`;
+  txt+=`${'─'.repeat(45)}\n\n`;
+  if(visitLog.length){
+    txt+=`ПЕРЕВІРЕНІ ТОЧКИ:\n`;
+    visitLog.forEach((v,i)=>{
+      txt+=`${i+1}. ${v.name} — ${v.time} (відстань ~${v.dist}м)\n`;
+      txt+=`   ${v.lat.toFixed(6)}, ${v.lng.toFixed(6)}\n`;
+    });
+  } else { txt+='Жодної точки не перевірено.\n'; }
+  if(done<total){
+    txt+=`\nНЕ ПЕРЕВІРЕНІ ТОЧКИ:\n`;
+    checkpoints.filter(c=>!c.visited).forEach((c,i)=>{
+      txt+=`${i+1}. Кільце ${c.ringIdx+1}, точка ${c.ptIdx+1}\n`;
+      txt+=`   ${c.lat.toFixed(6)}, ${c.lng.toFixed(6)}\n`;
+    });
+  }
+  if(manualMarkers.length>=3){
+    const areaM2=sphericalArea(manualMarkers.map(m=>({lat:m.lat,lng:m.lng})));
+    const areaHa=(areaM2/10000).toFixed(2);
+    const diff=(areaHa-currentField.area).toFixed(2);
+    const sign=diff>0?'+':'';
+    txt+=`\n${'─'.repeat(45)}\n`;
+    txt+=`ФАКТИЧНА ПЛОЩА (по відміченим точкам):\n`;
+    txt+=`  Фактична:  ${areaHa} га\n`;
+    txt+=`  Планова:   ${currentField.area} га\n`;
+    txt+=`  Різниця:   ${sign}${diff} га\n`;
+  }
+  if(manualMarkers.length){
+    txt+=`\n${'─'.repeat(45)}\n`;
+    txt+=`ВІДМІЧЕНІ ТОЧКИ РЕАЛЬНОЇ МЕЖІ:\n`;
+    manualMarkers.forEach(m=>{
+      txt+=`\nТочка #${m.num}\n`;
+      txt+=`  Координати: ${m.lat.toFixed(6)}, ${m.lng.toFixed(6)}\n`;
+      txt+=`  Google Maps: https://maps.google.com/?q=${m.lat.toFixed(6)},${m.lng.toFixed(6)}\n`;
+      txt+=`  Зміщення: ${m.shiftTxt||'—'}\n`;
+    });
+  }
+  const blob=new Blob([txt],{type:'text/plain;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`обхід_${currentField.name}_${new Date().toISOString().slice(0,10)}.txt`;
+  a.click();
+}
+
+// ===== УТИЛІТИ =====
+function haversine(lat1,lng1,lat2,lng2){
+  const R=6371000, dLat=(lat2-lat1)*Math.PI/180, dLng=(lng2-lng1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function setStatus(msg){ document.getElementById('status').textContent=msg; }
+
+// Старт
+buildList();
+</script>
+</body>
+</html>
