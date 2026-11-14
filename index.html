@@ -21,6 +21,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .field-name{font-size:15px;font-weight:600}
 .field-area{font-size:12px;color:#8b949e;margin-top:2px}
 .field-pts{font-size:11px;color:#4b5563;margin-top:2px}
+.field-done{background:#0d2818!important;border-color:#16a34a!important}
+.field-done .field-dot{background:#16a34a}
+.field-saved{font-size:11px;color:#4ade80;margin-top:3px}
 
 /* КАРТА */
 #map{flex:1}
@@ -67,6 +70,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <h1>🌾 Перевірка меж полів</h1>
   <p>Виберіть поле для обходу:</p>
   <div id="fieldList"></div>
+  <div style="padding:10px 8px;border-top:1px solid #21262d">
+    <button onclick="exportAllFields()" style="width:100%;background:#374151;color:#e8d5a3;border:none;border-radius:8px;padding:11px;font-size:14px;font-weight:600;cursor:pointer">📋 Загальний звіт по всіх полях</button>
+  </div>
 </div>
 
 <!-- РОБОЧА КАРТА -->
@@ -120,14 +126,31 @@ const RADIUS_M = 5;
 // ===== СПИСОК ПОЛІВ =====
 function buildList(){
   const list = document.getElementById('fieldList');
+  list.innerHTML='';
   FIELDS_DATA.forEach((f,i)=>{
     const totalPts = f.rings.reduce((s,r)=>s+r.length,0);
+    const saved = loadFieldResult(f.name);
     const div = document.createElement('div');
-    div.className = 'field-item';
-    div.innerHTML = `<div class="field-dot"></div><div><div class="field-name">${f.name}</div><div class="field-area">${f.area} га</div><div class="field-pts">${totalPts} кутових точок</div></div>`;
+    div.className = 'field-item' + (saved ? ' field-done' : '');
+    let savedInfo='';
+    if(saved){
+      const areaInfo = saved.areaHa ? ` · факт. площа ${saved.areaHa} га` : '';
+      savedInfo=`<div class="field-saved">✅ Пройдено ${saved.visitedPts}/${saved.totalPts} точок${areaInfo}<br><small style="color:#6b7280">${saved.savedAt}</small></div>`;
+    }
+    div.innerHTML =
+      `<div class="field-dot"></div>` +
+      `<div style="flex:1"><div class="field-name">${f.name}</div><div class="field-area">${f.area} га</div><div class="field-pts">${totalPts} кутових точок</div>${savedInfo}</div>` +
+      (saved ? `<button onclick="event.stopPropagation();clearField('${f.name}')" style="background:#374151;color:#9ca3af;border:none;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;flex-shrink:0">🗑</button>` : '');
     div.onclick = ()=>selectField(i);
     list.appendChild(div);
   });
+}
+
+function clearField(name){
+  if(confirm(`Очистити збережені дані поля "${name}"?`)){
+    clearFieldResult(name);
+    buildList();
+  }
 }
 
 // ===== ВИБІР ПОЛЯ =====
@@ -159,6 +182,7 @@ function selectField(idx){
   manualMarkers = [];
   pendingLatLng = null;
   markerMode = false;
+  window._gpsCentered = false;
 
   // Малюємо контур
   const latlngs = currentField.rings.map(r=>r.map(c=>[c[1],c[0]]));
@@ -218,16 +242,22 @@ function stopGps(){
 }
 
 function onGps(pos){
+  if(!map) return;
   const {latitude:lat,longitude:lng,accuracy} = pos.coords;
   if(gpsMarker) map.removeLayer(gpsMarker);
   if(gpsCircle) map.removeLayer(gpsCircle);
   gpsCircle=L.circle([lat,lng],{radius:accuracy,color:'#3b82f6',fillColor:'#3b82f6',fillOpacity:0.08,weight:1}).addTo(map);
   gpsMarker=L.circleMarker([lat,lng],{radius:7,color:'#fff',fillColor:'#2563eb',fillOpacity:1,weight:2}).addTo(map);
+  // Перший раз — центруємо карту на себе
+  if(!window._gpsCentered){ map.setView([lat,lng],16); window._gpsCentered=true; }
   setStatus(`📍 ±${Math.round(accuracy)}м`);
   checkProximity(lat,lng);
 }
 
-function onGpsErr(e){ setStatus('Помилка GPS: '+e.message); }
+function onGpsErr(e){
+  const msgs = {1:'Доступ до GPS заборонено — дозволь геолокацію в налаштуваннях браузера',2:'GPS сигнал недоступний',3:'GPS не відповів вчасно — спробуй ще раз'};
+  setStatus('⚠️ ' + (msgs[e.code]||e.message));
+}
 
 // ===== РУЧНІ МАРКЕРИ (реальна межа) =====
 let manualMarkers = [];
@@ -292,44 +322,119 @@ function placeManualMarker(latlng){
     iconAnchor:[14,28]
   });
 
-  const m=L.marker(latlng,{icon}).addTo(map);
-  m.bindPopup(
+  const markerObj = {num, lat:latlng.lat, lng:latlng.lng, shiftM, shiftTxt, leafletMarker:null};
+  manualMarkers.push(markerObj);
+  const idx = manualMarkers.length - 1;
+
+  const m = L.marker(latlng,{icon}).addTo(map);
+  const popupHtml =
+    `<div style="min-width:180px">` +
     `<b>Реальна межа #${num}</b><br>` +
-    (shiftTxt?`<span style="color:#fca5a5">↔ Зміщення: ${shiftTxt}</span><br>`:'') +
-    `<small style="color:#9ca3af">${latlng.lat.toFixed(6)}, ${latlng.lng.toFixed(6)}</small>`
-  ).openPopup();
+    (shiftTxt?`<span style="color:#dc2626">↔ ${shiftTxt}</span><br>`:'') +
+    `<small style="color:#9ca3af">${latlng.lat.toFixed(6)}, ${latlng.lng.toFixed(6)}</small><br>` +
+    `<button onclick="deleteManualMarker(${idx})" style="margin-top:6px;background:#dc2626;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:13px;cursor:pointer;width:100%">🗑 Видалити цю точку</button>` +
+    `</div>`;
+  m.bindPopup(popupHtml).openPopup();
+  markerObj.leafletMarker = m;
 
-  manualMarkers.push({num, lat:latlng.lat, lng:latlng.lng, shiftM, shiftTxt, leafletMarker:m});
-  setStatus(`📌 Точка #${num}: ${shiftTxt||'зміщення не розраховано'}`);
-
+  setStatus(`📌 Точка #${num}: ${shiftTxt||'зміщення не розраховано'} — натисни на маркер щоб видалити`);
   updateActualArea();
+  saveFieldResult();
+}
+
+function deleteManualMarker(idx){
+  const mo = manualMarkers[idx];
+  if(!mo || mo.deleted) return;
+  map.removeLayer(mo.leafletMarker);
+  mo.deleted = true;
+  // Перенумеруємо залишені
+  let n=1;
+  manualMarkers.forEach(m=>{ if(!m.deleted){ m.num=n++; m.leafletMarker.getPopup().setContent(
+    `<div style="min-width:180px"><b>Реальна межа #${m.num}</b><br>`+
+    (m.shiftTxt?`<span style="color:#dc2626">↔ ${m.shiftTxt}</span><br>`:'')+
+    `<small style="color:#9ca3af">${m.lat.toFixed(6)}, ${m.lng.toFixed(6)}</small><br>`+
+    `<button onclick="deleteManualMarker(${manualMarkers.indexOf(m)})" style="margin-top:6px;background:#dc2626;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:13px;cursor:pointer;width:100%">🗑 Видалити цю точку</button></div>`
+  ); }});
+  setStatus(`🗑 Точку видалено`);
+  updateActualArea();
+  saveFieldResult();
+}
+
+// Будуємо складений контур: де є маркер землевпорядника — беремо його точку,
+// де немає — беремо планову точку. Прив'язка: кожен маркер "належить"
+// найближчій плановій точці (що ще не зайнята іншим маркером).
+function buildCompositeContour(){
+  const active = manualMarkers.filter(m=>!m.deleted);
+
+  // Для кожної планової точки знайти найближчий маркер (в межах 50м)
+  // Якщо кілька маркерів претендують на одну точку — перемагає найближчий
+  const SNAP_M = 50; // максимальна відстань прив'язки маркера до планової точки
+  const assigned = new Map(); // cpIndex -> manualMarker
+
+  active.forEach(mm=>{
+    let bestCpIdx=-1, bestDist=Infinity;
+    checkpoints.forEach((cp,ci)=>{
+      const d=haversine(mm.lat,mm.lng,cp.lat,cp.lng);
+      if(d<SNAP_M && d<bestDist){ bestDist=d; bestCpIdx=ci; }
+    });
+    if(bestCpIdx>=0){
+      // Якщо ця планова точка вже зайнята — перемагає той, хто ближче
+      if(!assigned.has(bestCpIdx)||bestDist<assigned.get(bestCpIdx).dist){
+        assigned.set(bestCpIdx,{mm,dist:bestDist});
+      }
+    }
+  });
+
+  // Будуємо контур по кільцях поля
+  const allRingPts = [];
+  currentField.rings.forEach((ring,ri)=>{
+    ring.forEach((coord,pi)=>{
+      const cpIdx = checkpoints.findIndex(c=>c.ringIdx===ri&&c.ptIdx===pi);
+      if(cpIdx>=0 && assigned.has(cpIdx)){
+        // Є маркер землевпорядника — беремо його координати
+        const mm=assigned.get(cpIdx).mm;
+        allRingPts.push({lat:mm.lat,lng:mm.lng,source:'surveyor'});
+      } else {
+        // Немає маркера — беремо планову точку
+        allRingPts.push({lat:coord[1],lng:coord[0],source:'planned'});
+      }
+    });
+  });
+
+  return {pts:allRingPts, assignedCount:assigned.size};
 }
 
 // Малюємо лінію фактичного контуру і рахуємо площу
 function updateActualArea(){
-  // Видалити попередню фактичну лінію
   if(window._actualLayer){ map.removeLayer(window._actualLayer); window._actualLayer=null; }
 
-  if(manualMarkers.length<3){
-    document.getElementById('areaPanel').style.display='none';
-    return;
-  }
+  const active=manualMarkers.filter(m=>!m.deleted);
 
-  const pts=manualMarkers.map(m=>[m.lat,m.lng]);
-  window._actualLayer=L.polygon(pts,{
+  // Показуємо панель як тільки є хоч 1 маркер (решту добудовуємо з планових точок)
+  if(active.length<1){ document.getElementById('areaPanel').style.display='none'; return; }
+
+  const {pts, assignedCount} = buildCompositeContour();
+
+  window._actualLayer=L.polygon(pts.map(p=>[p.lat,p.lng]),{
     color:'#dc2626', weight:2, dashArray:'6 4',
     fillColor:'#dc2626', fillOpacity:0.08
   }).addTo(map);
 
-  const areaM2=sphericalArea(manualMarkers.map(m=>({lat:m.lat,lng:m.lng})));
+  const areaM2=sphericalArea(pts);
   const areaHa=(areaM2/10000).toFixed(2);
   const planned=currentField.area;
-  const diff=(areaHa-planned).toFixed(2);
+  const diff=(parseFloat(areaHa)-planned).toFixed(2);
   const sign=diff>0?'+':'';
+  const totalPts=pts.length;
+  const plannedUsed=totalPts-assignedCount;
 
   const panel=document.getElementById('areaPanel');
   panel.style.display='block';
-  panel.innerHTML=`📐 Фактична площа (по точках): <span>${areaHa} га</span> &nbsp;|&nbsp; Планова: <span>${planned} га</span> &nbsp;|&nbsp; Різниця: <span>${sign}${diff} га</span>`;
+  panel.innerHTML=
+    `📐 Фактична площа: <span>${areaHa} га</span> &nbsp;|&nbsp; ` +
+    `Планова: <span>${planned} га</span> &nbsp;|&nbsp; ` +
+    `Різниця: <span>${sign}${diff} га</span>` +
+    `<br><small style="color:#86efac">Маркерів землевпорядника: ${assignedCount}, планових точок (без маркера): ${plannedUsed}</small>`;
 }
 
 // Площа сферичного полігону (формула Гауса на сфері)
@@ -365,6 +470,7 @@ function checkProximity(lat,lng){
       });
       updateProgress();
       triggerAlert(cp);
+      saveFieldResult();
 
       const done = checkpoints.filter(c=>c.visited).length;
       if(done === checkpoints.length) fieldComplete();
@@ -412,6 +518,7 @@ function fieldComplete(){
 
 // ===== ПОВЕРНЕННЯ =====
 function goBack(){
+  saveFieldResult(); // зберегти перед виходом
   stopGps();
   if(window._actualLayer){ map.removeLayer(window._actualLayer); window._actualLayer=null; }
   ['header','progress','map','toolbar','status','areaPanel'].forEach(id=>{
@@ -419,6 +526,7 @@ function goBack(){
   });
   document.getElementById('screenSelect').style.display='flex';
   currentField=null; checkpoints=[]; visitLog=[];
+  buildList(); // оновити список з позначками ✅
 }
 
 // ===== ЕКСПОРТ =====
@@ -445,21 +553,26 @@ function exportResult(){
       txt+=`   ${c.lat.toFixed(6)}, ${c.lng.toFixed(6)}\n`;
     });
   }
-  if(manualMarkers.length>=3){
-    const areaM2=sphericalArea(manualMarkers.map(m=>({lat:m.lat,lng:m.lng})));
-    const areaHa=(areaM2/10000).toFixed(2);
-    const diff=(areaHa-currentField.area).toFixed(2);
-    const sign=diff>0?'+':'';
+  // Складений контур: маркери + планові точки де немає маркера
+  const activeM=manualMarkers.filter(m=>!m.deleted);
+  const {pts:compositePts, assignedCount} = buildCompositeContour();
+  const areaM2=sphericalArea(compositePts);
+  const areaHa=(areaM2/10000).toFixed(2);
+  const diff=(parseFloat(areaHa)-currentField.area).toFixed(2);
+  const sign=diff>0?'+':'';
+  const plannedUsed=compositePts.length-assignedCount;
+  txt+=`\n${'─'.repeat(45)}\n`;
+  txt+=`ФАКТИЧНА ПЛОЩА (складений контур):\n`;
+  txt+=`  Фактична:          ${areaHa} га\n`;
+  txt+=`  Планова:           ${currentField.area} га\n`;
+  txt+=`  Різниця:           ${sign}${diff} га\n`;
+  txt+=`  Маркерів землевп.: ${assignedCount}\n`;
+  txt+=`  Планових точок:    ${plannedUsed} (де маркера немає — взято планову)\n`;
+
+  if(activeM.length){
     txt+=`\n${'─'.repeat(45)}\n`;
-    txt+=`ФАКТИЧНА ПЛОЩА (по відміченим точкам):\n`;
-    txt+=`  Фактична:  ${areaHa} га\n`;
-    txt+=`  Планова:   ${currentField.area} га\n`;
-    txt+=`  Різниця:   ${sign}${diff} га\n`;
-  }
-  if(manualMarkers.length){
-    txt+=`\n${'─'.repeat(45)}\n`;
-    txt+=`ВІДМІЧЕНІ ТОЧКИ РЕАЛЬНОЇ МЕЖІ:\n`;
-    manualMarkers.forEach(m=>{
+    txt+=`ВІДМІЧЕНІ ТОЧКИ РЕАЛЬНОЇ МЕЖІ (землевпорядник):\n`;
+    activeM.forEach(m=>{
       txt+=`\nТочка #${m.num}\n`;
       txt+=`  Координати: ${m.lat.toFixed(6)}, ${m.lng.toFixed(6)}\n`;
       txt+=`  Google Maps: https://maps.google.com/?q=${m.lat.toFixed(6)},${m.lng.toFixed(6)}\n`;
@@ -480,6 +593,87 @@ function haversine(lat1,lng1,lat2,lng2){
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
 function setStatus(msg){ document.getElementById('status').textContent=msg; }
+
+// ===== ЗАГАЛЬНИЙ ЗВІТ =====
+function exportAllFields(){
+  const date=new Date().toLocaleString('uk-UA',{timeZone:'Europe/Kiev'});
+  let txt=`ЗАГАЛЬНИЙ ЗВІТ ОБХОДУ — ТОВ Долинське\n`;
+  txt+=`Дата формування: ${date}\n`;
+  txt+=`${'═'.repeat(50)}\n\n`;
+
+  let countDone=0, countFields=0;
+  FIELDS_DATA.forEach(f=>{
+    const s=loadFieldResult(f.name);
+    if(!s) return;
+    countFields++;
+    const allDone=(s.visitedPts===s.totalPts);
+    if(allDone) countDone++;
+    txt+=`ПОЛЕ: ${f.name} (${f.area} га)\n`;
+    txt+=`Перевірено: ${s.visitedPts} / ${s.totalPts} точок`;
+    txt+= allDone ? ' — ✅ ПРОЙДЕНО\n' : ' — ⚠️ НЕПОВНО\n';
+    txt+=`Дата обходу: ${s.savedAt}\n`;
+    if(s.areaHa){
+      const diff=(s.areaHa-s.plannedHa).toFixed(2);
+      txt+=`Фактична площа: ${s.areaHa} га (різниця ${diff>0?'+':''}${diff} га)\n`;
+    }
+    if(s.manualMarkers&&s.manualMarkers.length){
+      txt+=`Відмічено точок реальної межі: ${s.manualMarkers.length}\n`;
+      s.manualMarkers.forEach(m=>{
+        txt+=`  #${m.num}: ${m.shiftTxt||'—'}  [${m.lat.toFixed(6)},${m.lng.toFixed(6)}]\n`;
+      });
+    }
+    txt+=`${'─'.repeat(50)}\n\n`;
+  });
+
+  if(!countFields){
+    alert('Ще немає збережених результатів. Пройдіть хоча б одне поле.');
+    return;
+  }
+  txt+=`ПІДСУМОК: пройдено ${countDone} з ${countFields} полів що мають дані\n`;
+  const blob=new Blob([txt],{type:'text/plain;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`загальний_звіт_${new Date().toISOString().slice(0,10)}.txt`;
+  a.click();
+}
+
+// ===== LOCALSTORAGE =====
+function savedKey(fieldName){ return 'dolynske_field_'+fieldName; }
+
+function saveFieldResult(){
+  if(!currentField) return;
+  const done=checkpoints.filter(c=>c.visited).length;
+  const total=checkpoints.length;
+  const activeM=manualMarkers.filter(m=>!m.deleted);
+
+  let areaHa=null;
+  if(activeM.length>=1){
+    const {pts:cPts}=buildCompositeContour();
+    const areaM2=sphericalArea(cPts);
+    areaHa=(areaM2/10000).toFixed(2);
+  }
+
+  const data={
+    fieldName:currentField.name,
+    savedAt:new Date().toLocaleString('uk-UA',{timeZone:'Europe/Kiev'}),
+    visitedPts:done, totalPts:total,
+    areaHa, plannedHa:currentField.area,
+    visitLog:visitLog.map(v=>({...v})),
+    manualMarkers:activeM.map(m=>({num:m.num,lat:m.lat,lng:m.lng,shiftM:m.shiftM,shiftTxt:m.shiftTxt}))
+  };
+  try{ localStorage.setItem(savedKey(currentField.name), JSON.stringify(data)); }catch(e){}
+}
+
+function loadFieldResult(fieldName){
+  try{
+    const raw=localStorage.getItem(savedKey(fieldName));
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
+
+function clearFieldResult(fieldName){
+  try{ localStorage.removeItem(savedKey(fieldName)); }catch(e){}
+}
 
 // Старт
 buildList();
