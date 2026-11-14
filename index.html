@@ -205,6 +205,9 @@ function selectField(idx){
   updateProgress();
   setTimeout(()=>map.invalidateSize(),300);
   initMapClick();
+
+  // Відновити збережені точки з localStorage
+  restoreFieldState();
 }
 
 // ===== ПРОГРЕС =====
@@ -222,13 +225,38 @@ function toggleGps(){
 }
 
 function startGps(){
-  if(!navigator.geolocation){ setStatus('GPS недоступний'); return; }
-  setStatus('Визначаю місцезнаходження...');
-  gpsWatchId = navigator.geolocation.watchPosition(onGps, onGpsErr,
-    {enableHighAccuracy:true, maximumAge:3000, timeout:15000});
-  gpsActive = true;
+  if(!navigator.geolocation){
+    setStatus('⚠️ Цей браузер не підтримує GPS');
+    return;
+  }
+  // Перевіряємо дозвіл (тільки якщо API є)
+  if(navigator.permissions){
+    navigator.permissions.query({name:'geolocation'}).then(r=>{
+      if(r.state==='denied'){
+        setStatus('⚠️ GPS заблоковано. Відкрий Налаштування → Конфіденційність → Геолокація → дозволь для цього сайту');
+        return;
+      }
+      _doStartGps();
+    }).catch(()=>_doStartGps());
+  } else {
+    _doStartGps();
+  }
+}
+
+function _doStartGps(){
+  setStatus('⏳ Шукаю GPS сигнал...');
   document.getElementById('btnGps').className='btn btn-gps on';
   document.getElementById('btnGps').textContent='🔴 GPS вкл';
+  gpsActive = true;
+  // Спочатку один разовий запит — дає швидший перший результат на iOS
+  navigator.geolocation.getCurrentPosition(
+    pos=>{ onGps(pos); },
+    err=>{ onGpsErr(err); },
+    {enableHighAccuracy:true, timeout:10000, maximumAge:0}
+  );
+  // Потім watchPosition для постійного оновлення
+  gpsWatchId = navigator.geolocation.watchPosition(onGps, onGpsErr,
+    {enableHighAccuracy:true, maximumAge:5000, timeout:20000});
 }
 
 function stopGps(){
@@ -281,6 +309,52 @@ function cancelMarkerMode(){
   document.getElementById('btnMarker').textContent='📌 Межа';
   document.getElementById('btnMarker').onclick=startMarker;
   setStatus('');
+}
+
+// ===== ВІДНОВЛЕННЯ ЗБЕРЕЖЕНИХ ТОЧОК =====
+function restoreFieldState(){
+  const saved = loadFieldResult(currentField.name);
+  if(!saved || !saved.manualMarkers || saved.manualMarkers.length===0) return;
+
+  // Відновлюємо відвідані планові точки
+  if(saved.visitLog){
+    saved.visitLog.forEach(v=>{
+      const cp=checkpoints.find(c=>c.ringIdx===v.ringIdx&&c.ptIdx===v.ptIdx);
+      if(cp&&!cp.visited){
+        cp.visited=true;
+        cp.marker.setStyle({fillColor:'#16a34a',color:'#fff'});
+        cp.marker.setRadius(10);
+      }
+    });
+    visitLog=saved.visitLog.map(v=>({...v}));
+    updateProgress();
+  }
+
+  // Відновлюємо ручні маркери
+  saved.manualMarkers.forEach(sm=>{
+    const latlng={lat:sm.lat,lng:sm.lng};
+    const icon=L.divIcon({
+      className:'',
+      html:`<div style="background:#dc2626;color:#fff;border-radius:50% 50% 50% 0;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.5)"><span style="transform:rotate(45deg)">${sm.num}</span></div>`,
+      iconAnchor:[14,28]
+    });
+    const markerObj={num:sm.num,lat:sm.lat,lng:sm.lng,shiftM:sm.shiftM,shiftTxt:sm.shiftTxt,leafletMarker:null,deleted:false};
+    manualMarkers.push(markerObj);
+    const idx=manualMarkers.length-1;
+    const m=L.marker([sm.lat,sm.lng],{icon}).addTo(map);
+    const popupHtml=
+      `<div style="min-width:180px">` +
+      `<b>Реальна межа #${sm.num}</b><br>` +
+      (sm.shiftTxt?`<span style="color:#dc2626">↔ ${sm.shiftTxt}</span><br>`:'') +
+      `<small style="color:#9ca3af">${sm.lat.toFixed(6)}, ${sm.lng.toFixed(6)}</small><br>` +
+      `<button onclick="deleteManualMarker(${idx})" style="margin-top:6px;background:#dc2626;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:13px;cursor:pointer;width:100%">🗑 Видалити цю точку</button>` +
+      `</div>`;
+    m.bindPopup(popupHtml);
+    markerObj.leafletMarker=m;
+  });
+
+  if(manualMarkers.length>0) updateActualArea();
+  setStatus(`♻️ Відновлено ${manualMarkers.length} точок з минулого сеансу`);
 }
 
 // Клік на карті — без діалогу, одразу ставить маркер
@@ -466,7 +540,8 @@ function checkProximity(lat,lng){
         name:`Кільце ${cp.ringIdx+1}, точка ${cp.ptIdx+1}`,
         lat:cp.lat, lng:cp.lng,
         time:new Date().toLocaleTimeString('uk-UA'),
-        dist:Math.round(dist)
+        dist:Math.round(dist),
+        ringIdx:cp.ringIdx, ptIdx:cp.ptIdx  // потрібно для відновлення
       });
       updateProgress();
       triggerAlert(cp);
