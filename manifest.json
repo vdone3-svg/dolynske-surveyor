@@ -1,0 +1,25 @@
+{
+  "name": "Перевірка меж — Долинське",
+  "short_name": "Межі полів",
+  "description": "GPS обхід та перевірка меж полів ТОВ Долинське",
+  "start_url": "/dolynske-surveyor/",
+  "scope": "/dolynske-surveyor/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d1117",
+  "theme_color": "#161b22",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
